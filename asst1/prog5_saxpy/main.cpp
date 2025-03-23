@@ -41,6 +41,7 @@ int main() {
     float* arrayX = new float[N];
     float* arrayY = new float[N];
     float* resultSerial = new float[N];
+    float* resultThread = new float[N];
     float* resultISPC = new float[N];
     float* resultTasks = new float[N];
 
@@ -50,6 +51,7 @@ int main() {
         arrayX[i] = i;
         arrayY[i] = i;
         resultSerial[i] = 0.f;
+        resultThread[i] = 0.f;
         resultISPC[i] = 0.f;
         resultTasks[i] = 0.f;
     }
@@ -78,12 +80,12 @@ int main() {
     double minTHREAD = 1e30;
     for (int i = 0; i < 3; ++i) {
         double startTime = CycleTimer::currentSeconds();
-        saxpyThread(N, scale, arrayX, arrayY, resultISPC);
+        saxpyThread(N, scale, arrayX, arrayY, resultThread);
         double endTime = CycleTimer::currentSeconds();
         minTHREAD = std::min(minTHREAD, endTime - startTime);
     }
 
-    verifyResult(N, resultISPC, resultSerial);
+    verifyResult(N, resultThread, resultSerial);
 
     printf("[saxpy thread]:\t\t[%.3f] ms\t[%.3f] GB/s\t[%.3f] GFLOPS\n",
         minTHREAD * 1000,
