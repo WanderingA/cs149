@@ -12,6 +12,7 @@ typedef struct {
     int* output;
     int threadId;
     int numThreads;
+    int row_num;
 } WorkerArgs;
 
 
@@ -35,7 +36,24 @@ void workerThreadStart(WorkerArgs * const args) {
     // program that uses two threads, thread 0 could compute the top
     // half of the image and thread 1 could compute the bottom half.
 
-    printf("Hello world from thread %d\n", args->threadId);
+    double startTime = CycleTimer::currentSeconds();
+
+    const unsigned int CHUNK_SIZE = args->row_num;
+
+    // 每次处理多行
+    for(unsigned int cur_row=args->threadId*CHUNK_SIZE;
+        cur_row<args->height;
+        cur_row+=args->numThreads*CHUNK_SIZE) {
+        
+        int numRows = std::min(CHUNK_SIZE, args->height - cur_row);
+        mandelbrotSerial(args->x0, args->y0, args->x1, args->y1,
+                         args->width, args->height, cur_row, numRows,
+                         args->maxIterations, args->output);
+            
+    }
+
+    double endTime = CycleTimer::currentSeconds();
+    printf("Thread %d: [%.3f] ms\n", args->threadId, (endTime - startTime) * 1000);
 }
 
 //
@@ -47,7 +65,7 @@ void mandelbrotThread(
     int numThreads,
     float x0, float y0, float x1, float y1,
     int width, int height,
-    int maxIterations, int output[])
+    int maxIterations, int row_num, int output[])
 {
     static constexpr int MAX_THREADS = 32;
 
@@ -77,6 +95,7 @@ void mandelbrotThread(
         args[i].output = output;
       
         args[i].threadId = i;
+        args[i].row_num = row_num;
     }
 
     // Spawn the worker threads.  Note that only numThreads-1 std::threads
