@@ -135,6 +135,7 @@ int main() {
     delete[] arrayX;
     delete[] arrayY;
     delete[] resultSerial;
+    delete[] resultThread;
     delete[] resultISPC;
     delete[] resultTasks;
 
