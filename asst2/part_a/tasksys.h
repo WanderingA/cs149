@@ -17,6 +17,7 @@ class TaskSystemSerial: public ITaskSystem {
         TaskID runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
                                 const std::vector<TaskID>& deps);
         void sync();
+    
 };
 
 /*
@@ -34,6 +35,9 @@ class TaskSystemParallelSpawn: public ITaskSystem {
         TaskID runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
                                 const std::vector<TaskID>& deps);
         void sync();
+
+    private:
+        int max_threads;
 };
 
 /*
@@ -51,6 +55,17 @@ class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
         TaskID runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
                                 const std::vector<TaskID>& deps);
         void sync();
+
+    private:
+        int max_threads;
+        int total_tasks_num = 0;
+        std::vector<std::thread> worker_pool;
+        IRunnable* runner = nullptr;
+        int left_task_num = 0;
+        std::atomic<int> finished_task_num{0};
+        bool is_terminate = false;
+        std::mutex mtx;
+        void worker();
 };
 
 /*
@@ -68,6 +83,18 @@ class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
         TaskID runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
                                 const std::vector<TaskID>& deps);
         void sync();
+
+    private:
+        int max_threads;
+        std::vector<std::thread> threads;
+        bool stop = false;
+        int total_tasks_num = 0;
+        int left_task_num = 0;
+        int finished_task_num = 0;
+        std::mutex mtx_worker, mtx_finish;
+        std::condition_variable cv_worker, cv_finish;
+        IRunnable* runner = nullptr;
+        void worker();
 };
 
 #endif
