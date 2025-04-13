@@ -60,14 +60,14 @@ void mutex_example() {
 }
 
 /*
- * Wrapper class around a counter, a condition variable, and a mutex.
+ * 管理线程状态
  */
 class ThreadState {
     public:
         std::condition_variable* condition_variable_;
         std::mutex* mutex_;
-        int counter_;
-        int num_waiting_threads_;
+        int counter_;              // 事件个数
+        int num_waiting_threads_;  // 当前等待的线程数
         ThreadState(int num_waiting_threads) {
             condition_variable_ = new std::condition_variable();
             mutex_ = new std::mutex();
@@ -81,8 +81,7 @@ class ThreadState {
 };
 
 void signal_fn(ThreadState* thread_state) {
-    // Acquire mutex to make sure the shared counter is read in a
-    // consistent state.
+    // 确保数据一致性
     thread_state->mutex_->lock();
     while (thread_state->counter_ < thread_state->num_waiting_threads_) {
         thread_state->mutex_->unlock();
@@ -96,16 +95,17 @@ void signal_fn(ThreadState* thread_state) {
 }
 
 void wait_fn(ThreadState* thread_state) {
-    // A lock must be held in order to wait on a condition variable.
-    // This lock is atomically released before the thread goes to sleep
-    // when `wait()` is called. The lock is atomically re-acquired when
-    // the thread is woken up using `notify_all()`.
+    // 必须加锁才能等待条件变量。
+    // 当调用 `wait()` 时，该锁会在线程休眠前被原子释放。
+    // 调用`wait()`时释放。 当调用
+    // 使用 `notify_all()` 唤醒线程时，会原子地重新获取锁。
     std::unique_lock<std::mutex> lk(*thread_state->mutex_);
     thread_state->condition_variable_->wait(lk);
-    // Increment the shared counter with the lock re-acquired to inform the
-    // signaling thread that this waiting thread has successfully been
-    // woken up.
+    // 用重新获得的锁递增共享计数器，以通知
+    // 信号线程已成功获取了锁。
+    // 唤醒。
     thread_state->counter_++;
+    printf("counter_ = %d...\n", thread_state->counter_);
     printf("Lock re-acquired after wait()...\n");
     lk.unlock();
 }
