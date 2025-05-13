@@ -126,13 +126,42 @@ const char* TaskSystemParallelThreadPoolSleeping::name() {
     return "Parallel + Thread Pool + Sleep";
 }
 
-TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int num_threads): ITaskSystem(num_threads) {
+
+void TaskSystemParallelThreadPoolSleeping::worker() {
+    while(true){
+        std::unique_lock<std::mutex> lock(mtx_worker);
+        auto wait_func = [this]{ return this->stop || this->left_task_name > 0; };
+        cv_worker.wait(lock, wait_func);
+
+        if(stop && left_task_name == 0) break;
+
+        int task_id = total_task_name - left_task_name--;
+        lock.unlock();
+
+        runner->runTask(task_id, total_task_name);
+
+        {
+            std::lock_guard<std::mutex> lock(mtx_finished);
+            finished_task_name++;
+            if(finished_task_name == total_task_name) {
+                cv_finished.notify_one();
+            }
+        }
+    }
+}
+
+TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int num_threads): ITaskSystem(num_threads), num_threads(num_threads) {
     //
     // TODO: CS149 student implementations may decide to perform setup
     // operations (such as thread pool construction) here.
     // Implementations are free to add new class member variables
     // (requiring changes to tasksys.h).
     //
+    stop = false;
+    total_task_name = 0;
+    for(int i=0; i<this->num_threads; i++) {
+        workers.push_back(std::thread([this]{worker();}));
+    }
 }
 
 TaskSystemParallelThreadPoolSleeping::~TaskSystemParallelThreadPoolSleeping() {
@@ -142,6 +171,17 @@ TaskSystemParallelThreadPoolSleeping::~TaskSystemParallelThreadPoolSleeping() {
     // Implementations are free to add new class member variables
     // (requiring changes to tasksys.h).
     //
+    this->stop = true;
+    cv_worker.notify_all();
+    for(auto& worker : workers) {
+        if(worker.joinable()) {
+            worker.join();
+        }
+    }
+
+    for(auto& pair: task_contexts){
+        delete pair.second;
+    }
 }
 
 void TaskSystemParallelThreadPoolSleeping::run(IRunnable* runnable, int num_total_tasks) {
@@ -153,9 +193,20 @@ void TaskSystemParallelThreadPoolSleeping::run(IRunnable* runnable, int num_tota
     // tasks sequentially on the calling thread.
     //
 
-    for (int i = 0; i < num_total_tasks; i++) {
-        runnable->runTask(i, num_total_tasks);
+    runner = runnable;
+    finished_task_name = 0;
+    total_task_name = num_total_tasks;
+
+    {
+        std::lock_guard<std::mutex> lock(mtx_worker);
+        left_task_name = num_total_tasks;
     }
+
+    cv_worker.notify_all();
+
+    std::unique_lock<std::mutex> lock(mtx_finished);
+    auto wait_func = [this]{ return this->finished_task_name == this->total_task_name; };
+    cv_finished.wait(lock, wait_func);
 }
 
 TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
@@ -166,11 +217,27 @@ TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable* runnabl
     // TODO: CS149 students will implement this method in Part B.
     //
 
-    for (int i = 0; i < num_total_tasks; i++) {
-        runnable->runTask(i, num_total_tasks);
+    for(const auto& dep: deps){
+        TaskContext* task_context = this->task_contexts[dep];
+        std::unique_lock<std::mutex> lock(task_context->mtx);
+        task_context->cv.wait(lock, [task_context]{ return task_context->is_finished; });
     }
 
-    return 0;
+    int cur_task_id = this->next_task_id.fetch_add(1);
+    TaskContext* task_contexts = new TaskContext(cur_task_id);
+
+    // 在另一个线程中执行任务
+    std::thread([this, runnable, num_total_tasks, task_contexts]{
+        this->run(runnable, num_total_tasks);
+        {
+            std::lock_guard<std::mutex> lock(task_contexts->mtx);
+            task_contexts->is_finished = true;
+        }
+        task_contexts->cv.notify_all();
+    }).detach();
+
+    this->task_contexts[cur_task_id] = task_contexts;
+    return cur_task_id;
 }
 
 void TaskSystemParallelThreadPoolSleeping::sync() {
@@ -178,6 +245,10 @@ void TaskSystemParallelThreadPoolSleeping::sync() {
     //
     // TODO: CS149 students will modify the implementation of this method in Part B.
     //
-
+    for(const auto& pair: this->task_contexts){
+        TaskContext* task_context = pair.second;
+        std::unique_lock<std::mutex> lock(task_context->mtx);
+        task_context->cv.wait(lock, [task_context]{ return task_context->is_finished; });
+    }
     return;
 }
