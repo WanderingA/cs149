@@ -42,6 +42,28 @@ static inline int nextPow2(int n) {
 // Also, as per the comments in cudaScan(), you can implement an
 // "in-place" scan, since the timing harness makes a copy of input and
 // places it in result
+__global__ void scan_kernel_upsweep(int* output, int two_dplus1, int N) {
+    long long index = threadIdx.x + blockIdx.x * blockDim.x;
+    index *= two_dplus1;
+    if(index < N) {
+        int two_d = two_dplus1 >> 1;
+        output[index + two_dplus1 - 1] += output[index + two_d - 1];
+    }
+}
+
+
+__global__ void scan_kernel_downsweep(int* output, int two_dplus1, int N) {
+    long long index = threadIdx.x + blockIdx.x * blockDim.x;
+    index *= two_dplus1;
+    if(index < N) {
+        int two_d = two_dplus1 >> 1;
+        int t = output[index + two_d - 1];
+        output[index + two_d - 1] = output[index + two_dplus1 - 1];
+        output[index + two_dplus1 - 1] += t;
+    }
+}
+
+
 void exclusive_scan(int* input, int N, int* result)
 {
 
@@ -54,7 +76,23 @@ void exclusive_scan(int* input, int N, int* result)
     // to CUDA kernel functions (that you must write) to implement the
     // scan.
 
+    N = nextPow2(N);
+    int threads_per_block = THREADS_PER_BLOCK;
+    int blocks = 512;
+    cudaMemcpy(result, input, N * sizeof(int), cudaMemcpyDeviceToDevice);
 
+    for(int two_d = 1, num = (N >> 1); two_d <= (N>>1); two_d <<= 1, num >>= 1) {
+        blocks = (num + threads_per_block - 1) / threads_per_block;
+        scan_kernel_upsweep<<<blocks, threads_per_block>>>(result, two_d << 1, N);
+    }
+
+    int t = 0; 
+    cudaMemcpy(result + N - 1, &t, sizeof(int), cudaMemcpyHostToDevice);
+
+    for(int two_d = (N>>1), num = 1; two_d >= 1; two_d >>= 1, num <<= 1) {
+        blocks = (num + threads_per_block - 1) / threads_per_block;
+        scan_kernel_downsweep<<<blocks, threads_per_block>>>(result, two_d << 1, N);
+    }
 }
 
 
@@ -147,6 +185,27 @@ double cudaScanThrust(int* inarray, int* end, int* resultarray) {
 // indices `i` for which `device_input[i] == device_input[i+1]`.
 //
 // Returns the total number of pairs found
+__global__ void find_repeats_cmp(int* input, int* output, int length) {
+    int index = threadIdx.x + blockIdx.x * blockDim.x;
+    if(index < length -1) {
+        output[index] = input[index] == input[index + 1];
+    }
+}
+
+__global__ void find_repeats_combine(int* input, int* output, int length) {
+    int index = threadIdx.x + blockIdx.x * blockDim.x;
+    if(index < length - 1) {
+        output[index] |= input[index] << 31;
+    }
+}
+
+__global__ void find_repeats_get_result(int* input, int* output, int length) {
+    int index = threadIdx.x + blockIdx.x * blockDim.x;
+    if(index < length - 1 && (input[index] & (1 << 31))) {
+        output[input[index] & ((1u << 31) -1)] = index;
+    } 
+}
+
 int find_repeats(int* device_input, int length, int* device_output) {
 
     // CS149 TODO:
@@ -161,7 +220,21 @@ int find_repeats(int* device_input, int length, int* device_output) {
     // must ensure that the results of find_repeats are correct given
     // the actual array length.
 
-    return 0; 
+    int N = nextPow2(length);
+
+    int blocks = (length + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
+    // 获取是否相等的 01 数组
+    find_repeats_cmp<<<blocks, THREADS_PER_BLOCK>>>(device_input, device_output, length);
+    // 01 数组前缀和（不包括自己）
+    exclusive_scan(device_output, N, device_input);
+    // 融合两个数组（01数组占用另一个数组的符号位）
+    find_repeats_combine<<<blocks, THREADS_PER_BLOCK>>>(device_output, device_input, length);
+    // 获取结果
+    find_repeats_get_result<<<blocks, THREADS_PER_BLOCK>>>(device_input, device_output, length);
+
+    int res;
+    cudaMemcpy(&res, device_input + length - 1, sizeof(int), cudaMemcpyDeviceToHost);
+    return res; 
 }
 
 
