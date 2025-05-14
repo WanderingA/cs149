@@ -55,8 +55,12 @@ __constant__ float  cuConstColorRamp[COLOR_MAP_SIZE][3];
 // file simpler and to seperate code that should not be modified
 #include "noiseCuda.cu_inl"
 #include "lookupColor.cu_inl"
+#include "circleBoxTest.cu_inl"
 
-
+#define BLOCKDIM 16
+#define BLOCKSIZE (BLOCKDIM * BLOCKDIM)
+#define SCAN_BLOCK_DIM BLOCKSIZE
+#include "exclusiveScan.cu_inl"
 // kernelClearImageSnowflake -- (CUDA device code)
 //
 // Clear the image, setting the image to the white-gray gradation that
@@ -73,7 +77,7 @@ __global__ void kernelClearImageSnowflake() {
         return;
 
     int offset = 4 * (imageY * width + imageX);
-    float shade = .4f + .45f * static_cast<float>(height-imageY) / height;
+    float shade = .4f + .45f * static_cast<float>(height - imageY) / height;
     float4 value = make_float4(shade, shade, shade, 1.f);
 
     // write to global memory: As an optimization, I use a float4
@@ -427,6 +431,74 @@ __global__ void kernelRenderCircles() {
     }
 }
 
+/* 自定义的render */
+
+
+__global__ void kernelRenderCirclesPerPixel() {
+    int localThreadIndex = threadIdx.y * blockDim.x + threadIdx.x;   // 2D
+    int pixelX = blockIdx.x * blockDim.x + threadIdx.x;              // 像素
+    int pixelY = blockIdx.y * blockDim.y + threadIdx.y;
+    
+    int numCircles = cuConstRendererParams.numCircles;
+    short imageWidth = cuConstRendererParams.imageWidth;
+    short imageHeight = cuConstRendererParams.imageHeight;
+    float invWidth = 1.f / imageWidth;
+    float invHeight = 1.f / imageHeight;
+
+    if (pixelX >= imageWidth || pixelY >= imageHeight)
+        return;
+
+    float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(pixelX) + 0.5f),
+                                       invHeight * (static_cast<float>(pixelY) + 0.5f));
+    float4* imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (pixelY * imageWidth + pixelX)]);
+    float4 pixelColor = *imgPtr;
+    // 线程块负责的矩形区域
+    uint uboxL = blockIdx.x * blockDim.x;
+    uint uboxR = uboxL + blockDim.x - 1 < imageWidth ? uboxL + blockDim.x : imageWidth;
+    uint uboxB = blockIdx.y * blockDim.y;
+    uint uboxT =uboxB + blockDim.y - 1 < imageHeight ? uboxB + blockDim.y : imageHeight;
+
+    float boxL = uboxL * invWidth;
+    float boxR = uboxR * invWidth;
+    float boxB = uboxB * invHeight;
+    float boxT = uboxT * invHeight;
+
+    __shared__ uint flags[BLOCKSIZE];
+    __shared__ uint prefixSum[BLOCKSIZE];
+    __shared__ uint Scratch[2 * BLOCKSIZE];
+    __shared__ uint cirlces[BLOCKSIZE];
+
+    for (int bunch = 0; bunch < numCircles; bunch += BLOCKSIZE) {
+        // 每个block的所有线程先对BLOCKSIZE个圆判断是否与本block所在的box相交
+        int index = localThreadIndex + bunch;
+        int index3 = 3 * index;
+        if (index < numCircles) {
+            float3 p = *(float3 *)(&cuConstRendererParams.position[index3]);
+            float rad = cuConstRendererParams.radius[index];
+            flags[localThreadIndex] = circleInBoxConservative(p.x, p.y, rad, boxL, boxR, boxT, boxB);
+        } else {
+            flags[localThreadIndex] = 0;
+        }
+        __syncthreads();
+        // block里的每个线程负责当前block的一个像素，渲染刚刚得到的BLOCKSIZE个圆
+        sharedMemExclusiveScan(localThreadIndex, flags, prefixSum, Scratch, BLOCKSIZE);
+        __syncthreads();
+        if (flags[localThreadIndex]) {
+            cirlces[prefixSum[localThreadIndex]] = index;
+        }
+        int numCirclesInBox = prefixSum[BLOCKSIZE - 1] + flags[BLOCKSIZE - 1];
+        __syncthreads();
+        for (int i = 0; i < numCirclesInBox; i++) {
+            float3 pp = *(float3 *)(&cuConstRendererParams.position[3 * cirlces[i]]);
+            shadePixel(cirlces[i], pixelCenterNorm, pp, &pixelColor);
+        }
+    }
+    *imgPtr = pixelColor;
+    __syncthreads();
+}
+
+
+
 ////////////////////////////////////////////////////////////////////////////////////////
 
 
@@ -637,9 +709,13 @@ void
 CudaRenderer::render() {
 
     // 256 threads per block is a healthy number
-    dim3 blockDim(256, 1);
-    dim3 gridDim((numCircles + blockDim.x - 1) / blockDim.x);
+    // dim3 blockDim(256, 1);
+    // dim3 gridDim((numCircles + blockDim.x - 1) / blockDim.x);
 
-    kernelRenderCircles<<<gridDim, blockDim>>>();
-    cudaDeviceSynchronize();
+    // kernelRenderCircles<<<gridDim, blockDim>>>();
+    int imageWidth = image->width;
+    int imageHeight = image->height;
+    dim3 blockDim(BLOCKDIM, BLOCKDIM);
+    dim3 gridDim((imageWidth + blockDim.x - 1) / blockDim.x, (imageHeight + blockDim.y - 1) / blockDim.y);
+    kernelRenderCirclesPerPixel<<<gridDim, blockDim>>>();
 }
