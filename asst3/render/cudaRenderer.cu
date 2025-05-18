@@ -453,12 +453,12 @@ __global__ void kernelRenderCirclesPerPixel() {
     float4* imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (pixelY * imageWidth + pixelX)]);
     float4 pixelColor = *imgPtr;
     // 线程块负责的矩形区域
-    uint uboxL = blockIdx.x * blockDim.x;
+    uint uboxL = blockIdx.x * blockDim.x;                                                                   // block 负责的左边界像素索引
     uint uboxR = uboxL + blockDim.x - 1 < imageWidth ? uboxL + blockDim.x : imageWidth;
     uint uboxB = blockIdx.y * blockDim.y;
     uint uboxT =uboxB + blockDim.y - 1 < imageHeight ? uboxB + blockDim.y : imageHeight;
 
-    float boxL = uboxL * invWidth;
+    float boxL = uboxL * invWidth;                                                                          // 归一化坐标
     float boxR = uboxR * invWidth;
     float boxB = uboxB * invHeight;
     float boxT = uboxT * invHeight;
