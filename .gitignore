@@ -1,0 +1,8 @@
+file.txt
+*.log
+logs/
+temp*
+objs/
+*.ppm
+*.o
+*.dat

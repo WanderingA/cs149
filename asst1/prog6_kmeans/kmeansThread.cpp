@@ -3,10 +3,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <thread>
+#include <immintrin.h>
+#include <omp.h>
 
 #include "CycleTimer.h"
 
 using namespace std;
+
+const int maxThreads=32;
 
 typedef struct {
   // Control work assignments
@@ -17,7 +21,7 @@ typedef struct {
   double *clusterCentroids;
   int *clusterAssignments;
   double *currCost;
-  int M, N, K;
+  int M, N, K,numThreads,threadId,mstart,mend;
 } WorkerArgs;
 
 
@@ -64,29 +68,74 @@ double dist(double *x, double *y, int nDim) {
 /**
  * Assigns each data point to its "closest" cluster centroid.
  */
-void computeAssignments(WorkerArgs *const args) {
-  double *minDist = new double[args->M];
+// void computeAssignments(WorkerArgs *const args) {
+//   double *minDist = new double[args->M];
   
-  // Initialize arrays
-  for (int m =0; m < args->M; m++) {
-    minDist[m] = 1e30;
-    args->clusterAssignments[m] = -1;
-  }
+//   // Initialize arrays
+//   for (int m =0; m < args->M; m++) {
+//     minDist[m] = 1e30;
+//     args->clusterAssignments[m] = -1;
+//   }
 
-  // Assign datapoints to closest centroids
-  for (int k = args->start; k < args->end; k++) {
-    for (int m = 0; m < args->M; m++) {
-      double d = dist(&args->data[m * args->N],
-                      &args->clusterCentroids[k * args->N], args->N);
-      if (d < minDist[m]) {
-        minDist[m] = d;
-        args->clusterAssignments[m] = k;
+//   // Assign datapoints to closest centroids
+//   for (int k = args->start; k < args->end; k++) {
+//     for (int m = 0; m < args->M; m++) {
+//       double d = dist(&args->data[m * args->N],
+//                       &args->clusterCentroids[k * args->N], args->N);
+//       if (d < minDist[m]) {
+//         minDist[m] = d;
+//         args->clusterAssignments[m] = k;
+//       }
+//     }
+//   }
+
+//   free(minDist);
+// }
+
+
+void computeAssignmentsThreads(WorkerArgs &args) {
+  const int numThreads = min(std::thread::hardware_concurrency(), (unsigned int)maxThreads);
+  thread workThreads[maxThreads];
+  WorkerArgs workerArgs[maxThreads];
+  
+  double* minDist = new double[args.M];
+  // 初始化最小距离
+  for(int m=0; m<args.M; m++) {
+      minDist[m] = 1e30;
+      args.clusterAssignments[m] = -1;
+  }
+  
+  // 按数据点划分工作，而不是按簇划分
+  for(int i=0; i<numThreads; i++) {
+      workerArgs[i] = args;
+      workerArgs[i].mstart = i * (args.M / numThreads);
+      workerArgs[i].mend = (i == numThreads-1) ? args.M : (i+1) * (args.M / numThreads);
+  }
+  
+  auto worker = [](WorkerArgs* args, double* minDist) {
+      for(int m=args->mstart; m<args->mend; m++) {
+          for(int k=0; k<args->K; k++) {
+              double d = dist(&args->data[m * args->N], 
+                             &args->clusterCentroids[k * args->N], args->N);
+              if(d < minDist[m]) {
+                  minDist[m] = d;
+                  args->clusterAssignments[m] = k;
+              }
+          }
       }
-    }
+  };
+  
+  for(int i=0; i<numThreads; i++) {
+      workThreads[i] = thread(worker, &workerArgs[i], minDist);
   }
-
-  free(minDist);
+  
+  for(int i=0; i<numThreads; i++) {
+      workThreads[i].join();
+  }
+  
+  delete[] minDist;
 }
+
 
 /**
  * Given the cluster assignments, computes the new centroid locations for
@@ -197,6 +246,9 @@ void kMeansThread(double *data, double *clusterCentroids, int *clusterAssignment
 
   /* Main K-Means Algorithm Loop */
   int iter = 0;
+  double AssignmentsTime = 0;
+  double CentroidsTime = 0;
+  double CostTime = 0;
   while (!stoppingConditionMet(prevCost, currCost, epsilon, K)) {
     // Update cost arrays (for checking convergence criteria)
     for (int k = 0; k < K; k++) {
@@ -207,12 +259,27 @@ void kMeansThread(double *data, double *clusterCentroids, int *clusterAssignment
     args.start = 0;
     args.end = K;
 
-    computeAssignments(&args);
+    double startTime = CycleTimer::currentSeconds();
+    // computeAssignments(&args);
+    computeAssignmentsThreads(args);
+    double endTime= CycleTimer::currentSeconds();
+    AssignmentsTime += (endTime-startTime);
+
+    startTime = CycleTimer::currentSeconds();
     computeCentroids(&args);
+    endTime= CycleTimer::currentSeconds();
+    CentroidsTime += (endTime-startTime);
+
+    startTime = CycleTimer::currentSeconds();
     computeCost(&args);
+    endTime= CycleTimer::currentSeconds();
+    CostTime += (endTime-startTime);
 
     iter++;
   }
+  printf("[Assignments Time]: %.3f ms\n", AssignmentsTime * 1000 / iter);
+  printf("[Centroids Time]: %.3f ms\n", CentroidsTime * 1000 / iter);
+  printf("[Cost Time]: %.3f ms\n", CostTime * 1000 / iter);
 
   free(currCost);
   free(prevCost);

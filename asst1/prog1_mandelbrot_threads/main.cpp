@@ -16,6 +16,7 @@ extern void mandelbrotThread(
     float x0, float y0, float x1, float y1,
     int width, int height,
     int maxIterations,
+    int row_num,
     int output[]);
 
 extern void writePPMImage(
@@ -72,6 +73,7 @@ int main(int argc, char** argv) {
     const unsigned int height = 1200;
     const int maxIterations = 256;
     int numThreads = 2;
+    int row_num = 32;
 
     float x0 = -2;
     float x1 = 1;
@@ -83,11 +85,12 @@ int main(int argc, char** argv) {
     static struct option long_options[] = {
         {"threads", 1, 0, 't'},
         {"view", 1, 0, 'v'},
+        {"row", 1, 0, 'r'},
         {"help", 0, 0, '?'},
         {0 ,0, 0, 0}
     };
 
-    while ((opt = getopt_long(argc, argv, "t:v:?", long_options, NULL)) != EOF) {
+    while ((opt = getopt_long(argc, argv, "t:v:r:?", long_options, NULL)) != EOF) {
 
         switch (opt) {
         case 't':
@@ -108,6 +111,11 @@ int main(int argc, char** argv) {
                 fprintf(stderr, "Invalid view index\n");
                 return 1;
             }
+            break;
+        }
+        case 'r':
+        {
+            row_num = atoi(optarg);
             break;
         }
         case '?':
@@ -147,7 +155,7 @@ int main(int argc, char** argv) {
     for (int i = 0; i < 5; ++i) {
       memset(output_thread, 0, width * height * sizeof(int));
         double startTime = CycleTimer::currentSeconds();
-        mandelbrotThread(numThreads, x0, y0, x1, y1, width, height, maxIterations, output_thread);
+        mandelbrotThread(numThreads, x0, y0, x1, y1, width, height, maxIterations, row_num, output_thread);
         double endTime = CycleTimer::currentSeconds();
         minThread = std::min(minThread, endTime - startTime);
     }
@@ -163,7 +171,7 @@ int main(int argc, char** argv) {
 
         return 1;
     }
-
+    printf("row_num: %d\n", row_num);
     // compute speedup
     printf("\t\t\t\t(%.2fx speedup from %d threads)\n", minSerial/minThread, numThreads);
 
